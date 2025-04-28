@@ -16,7 +16,7 @@ from langchain_huggingface import HuggingFaceEndpoint
 
 
 from secret_api_keys import Rag_QA  # Set the Hugging Face Hub API token as an environment variable
-# Rag_QA = st.secrets["Rag_QA"]
+Rag_QA = st.secrets["Rag_QA"]
 os.environ['HUGGINGFACEHUB_API_TOKEN'] = Rag_QA
 
 def process_input(input_type, input_data):
