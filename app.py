@@ -14,7 +14,7 @@ from langchain.chains import RetrievalQA
 from langchain_huggingface import HuggingFaceEndpoint
 
 # Load API key securely
-Rag_QA = st.secrets["RAG_QA"]
+Rag_QA = st.secrets["Rag_QA"]
 
 # Set the Hugging Face API token as an environment variable
 os.environ['HUGGINGFACEHUB_API_TOKEN'] = Rag_QA
