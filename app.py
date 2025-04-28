@@ -15,9 +15,9 @@ from langchain_community.docstore.in_memory import InMemoryDocstore
 from langchain_huggingface import HuggingFaceEndpoint
 
 
-from secret_api_keys import Rag_QA  # Set the Hugging Face Hub API token as an environment variable
+# from secret_api_keys import Rag_QA  # Set the Hugging Face Hub API token as an environment variable
 Rag_QA = st.secrets["Rag_QA"]
-os.environ['HUGGINGFACEHUB_API_TOKEN'] = Rag_QA
+# os.environ['HUGGINGFACEHUB_API_TOKEN'] = Rag_QA
 
 def process_input(input_type, input_data):
     """Processes different input types and returns a vectorstore."""
