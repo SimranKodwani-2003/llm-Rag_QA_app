@@ -1,13 +1,10 @@
+streamlit
 langchain
-numpy
-streamlit
 langchain-community
-streamlit
+huggingface_hub
+sentence-transformers
+faiss-cpu
 PyPDF2
 unstructured
 nltk
-sentence-transformers
-langchain-huggingface
-faiss-cpu
 python-docx
-
