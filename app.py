@@ -17,7 +17,7 @@ from langchain_huggingface import HuggingFaceEndpoint
 Rag_QA = st.secrets["Rag_QA"]
 
 # Set the Hugging Face API token as an environment variable
-os.environ['HUGGINGFACEHUB_API_TOKEN'] = Rag_QA
+# os.environ['HUGGINGFACEHUB_API_TOKEN'] = Rag_QA
 
 def process_input(input_type, input_data):
     """Processes different input types and returns a vectorstore."""
