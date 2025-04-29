@@ -1,134 +1,136 @@
-# Set environment variables at the top before importing Streamlit
-import os
-os.environ["STREAMLIT_SERVER_RUN_ON_SAVE"] = "false"
 
 import streamlit as st
 import faiss
-import numpy as np
+import os
 from io import BytesIO
 from docx import Document
-from PyPDF2 import PdfReader
+import numpy as np
 from langchain_community.document_loaders import WebBaseLoader
+from PyPDF2 import PdfReader
+from langchain.chains import RetrievalQA
 from langchain.text_splitter import CharacterTextSplitter
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
 from langchain_community.docstore.in_memory import InMemoryDocstore
-from langchain.chains import RetrievalQA
 from langchain_huggingface import HuggingFaceEndpoint
 
-# Load API key securely from Streamlit Secrets
+
+from secret_api_keys import Rag_QA  # Set the Hugging Face Hub API token as an environment variable
 Rag_QA = st.secrets["Rag_QA"]
+# os.environ['HUGGINGFACEHUB_API_TOKEN'] = Rag_QA
 
 def process_input(input_type, input_data):
     """Processes different input types and returns a vectorstore."""
-    
-    # Load documents based on input type
+    loader = None
     if input_type == "Link":
         loader = WebBaseLoader(input_data)
         documents = loader.load()
-        documents = [doc.page_content for doc in documents]
     elif input_type == "PDF":
-        pdf_reader = PdfReader(input_data)
-        text = "".join(page.extract_text() for page in pdf_reader.pages)
-        documents = [text]
+        if isinstance(input_data, BytesIO):
+            pdf_reader = PdfReader(input_data)
+        elif isinstance(input_data, UploadedFile):
+            pdf_reader = PdfReader(BytesIO(input_data.read()))
+        else:
+            raise ValueError("Invalid input data for PDF")
+        text = ""
+        for page in pdf_reader.pages:
+            text += page.extract_text()
+        documents = text
     elif input_type == "Text":
-        documents = [input_data]
+        if isinstance(input_data, str):
+            documents = input_data  # Input is already a text string
+        else:
+            raise ValueError("Expected a string for 'Text' input type.")
     elif input_type == "DOCX":
-        doc = Document(input_data)
-        text = "\n".join(para.text for para in doc.paragraphs)
-        documents = [text]
+        if isinstance(input_data, BytesIO):
+            doc = Document(input_data)
+        elif isinstance(input_data, UploadedFile):
+            doc = Document(BytesIO(input_data.read()))
+        else:
+            raise ValueError("Invalid input data for DOCX")
+        text = "\n".join([para.text for para in doc.paragraphs])
+        documents = text
     elif input_type == "TXT":
-        text = input_data.read().decode('utf-8')
-        documents = [text]
+        if isinstance(input_data, BytesIO):
+            text = input_data.read().decode('utf-8')
+        elif isinstance(input_data, UploadedFile):
+            text = str(input_data.read().decode('utf-8'))
+        else:
+            raise ValueError("Invalid input data for TXT")
+        documents = text
     else:
-        raise ValueError("Unsupported input type.")
+        raise ValueError("Unsupported input type")
 
-    # Split documents into smaller chunks
     text_splitter = CharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
-    texts = []
-    for doc in documents:
-        texts.extend(text_splitter.split_text(doc))
-    
-    # Load the HuggingFace embedding model
+    if input_type == "Link":
+        texts = text_splitter.split_documents(documents)
+        texts = [ str(doc.page_content) for doc in texts ]  # Access page_content from each Document 
+    else:
+        texts = text_splitter.split_text(documents)
+
     model_name = "sentence-transformers/all-mpnet-base-v2"
+    model_kwargs = {'device': 'cpu'}
+    encode_kwargs = {'normalize_embeddings': False}
+
     hf_embeddings = HuggingFaceEmbeddings(
         model_name=model_name,
-        model_kwargs={'device': 'cpu'},
-        encode_kwargs={'normalize_embeddings': False}
+        model_kwargs=model_kwargs,
+        encode_kwargs=encode_kwargs
     )
-
-    # Initialize FAISS index
+    # Create FAISS index
     sample_embedding = np.array(hf_embeddings.embed_query("sample text"))
     dimension = sample_embedding.shape[0]
     index = faiss.IndexFlatL2(dimension)
-
-    # Create FAISS vectorstore
+    # Create FAISS vector store with the embedding function
     vector_store = FAISS(
         embedding_function=hf_embeddings.embed_query,
         index=index,
         docstore=InMemoryDocstore(),
         index_to_docstore_id={},
     )
-    
-    # Add texts to vectorstore
-    vector_store.add_texts(texts)
+    vector_store.add_texts(texts)  # Add documents to the vector store
     return vector_store
 
 def answer_question(vectorstore, query):
     """Answers a question based on the provided vectorstore."""
-    
-    # Initialize the LLM
     llm = HuggingFaceEndpoint(
-        repo_id='microsoft/Phi-3.5-mini-instruct',
-        token=Rag_QA,
-        temperature=0.6,
-        task="text-generation"
-    )
-    
-    # Set up retrieval QA chain
-    qa = RetrievalQA.from_chain_type(
-        llm=llm,
-        retriever=vectorstore.as_retriever()
-    )
-    
-    # Query the QA chain
+    repo_id='microsoft/Phi-3.5-mini-instruct',
+    token=Rag_QA,
+    temperature=0.6,
+    task="text-generation"   # <-- ADD THIS
+)
+
+    qa = RetrievalQA.from_chain_type(llm=llm, retriever=vectorstore.as_retriever())
+
     answer = qa({"query": query})
-    return answer["result"]
+    return answer
 
 def main():
-    st.title("RAG Q&A Application")
-
-    # User input for document source
-    input_type = st.selectbox("Select Input Type:", ["Link", "PDF", "Text", "DOCX", "TXT"])
-    
-    input_data = None
+    st.title("RAG Q&A App")
+    input_type = st.selectbox("Input Type", ["Link", "PDF", "Text", "DOCX", "TXT"])
     if input_type == "Link":
-        input_data = st.text_input("Enter the URL:")
+        number_input = st.number_input(min_value=1, max_value=20, step=1, label = "Enter the number of Links")
+        input_data = []
+        for i in range(number_input):
+            url = st.sidebar.text_input(f"URL {i+1}")
+            input_data.append(url)
     elif input_type == "Text":
-        input_data = st.text_area("Enter the Text:")
-    else:
-        input_data = st.file_uploader(f"Upload your {input_type} file:", type=[input_type.lower()])
-
-    # Process document
-    if st.button(" Process Document"):
-        if input_data:
-            with st.spinner("Processing document and creating knowledge base..."):
-                vectorstore = process_input(input_type, input_data)
-                st.session_state["vectorstore"] = vectorstore
-            st.success("Document processed successfully! You can now ask questions.")
-        else:
-            st.warning("⚠️ Please upload a file or provide input data.")
-
-    # Ask questions
+        input_data = st.text_input("Enter the text")
+    elif input_type == 'PDF':
+        input_data = st.file_uploader("Upload a PDF file", type=["pdf"])
+    elif input_type == 'TXT':
+        input_data = st.file_uploader("Upload a text file", type=['txt'])
+    elif input_type == 'DOCX':
+        input_data = st.file_uploader("Upload a DOCX file", type=[ 'docx', 'doc'])
+    if st.button("Proceed"):
+        # st.write(process_input(input_type, input_data))
+        vectorstore = process_input(input_type, input_data)
+        st.session_state["vectorstore"] = vectorstore
     if "vectorstore" in st.session_state:
-        query = st.text_input("Ask your question:")
-        if st.button(" Submit Question"):
-            if query.strip():
-                with st.spinner("Finding the best answer..."):
-                    answer = answer_question(st.session_state["vectorstore"], query)
-                st.success(answer)
-            else:
-                st.warning("⚠️ Please enter a question to submit.")
+        query = st.text_input("Ask your question")
+        if st.button("Submit"):
+            answer = answer_question(st.session_state["vectorstore"], query)
+            st.write(answer)
 
 if __name__ == "__main__":
     main()
