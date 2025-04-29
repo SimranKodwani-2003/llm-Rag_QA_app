@@ -1,4 +1,3 @@
-# app.py
 import streamlit as st
 from langchain_community.document_loaders import PyPDFLoader, TextLoader, Docx2txtLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
@@ -13,7 +12,7 @@ import os
 
 class HFInferenceLLM(LLM):
     def __init__(self, api_key, model):
-        self.client = InferenceClient(provider="nebius", api_key=api_key)
+        self.client = InferenceClient(token=api_key)
         self.model = model
 
     def _call(self, prompt: str, **kwargs) -> str:
@@ -23,7 +22,7 @@ class HFInferenceLLM(LLM):
             max_new_tokens=256,
             temperature=0.7
         )
-        return response
+        return response.generated_text if hasattr(response, "generated_text") else response
 
     @property
     def _llm_type(self) -> str:
@@ -33,6 +32,7 @@ class HFInferenceLLM(LLM):
 
 def load_document(uploaded_file):
     file_path = f"temp_docs/{uploaded_file.name}"
+    os.makedirs("temp_docs", exist_ok=True)
     with open(file_path, "wb") as f:
         f.write(uploaded_file.getbuffer())
 
@@ -64,23 +64,24 @@ def answer_question(user_query, retriever, api_key):
 # ----------------------------- Streamlit UI -----------------------------
 
 st.set_page_config(page_title="RAG Q&A App", layout="wide")
-st.title("🧠 LLM RAG Q&A with Phi-3.5-mini (Nebius HF)")
+st.title("🧠 LLM RAG Q&A with Phi-3.5-mini")
 
-hf_api_key = st.text_input("Enter your Hugging Face API Key (Nebius)", type="password")
+# 🔐 Use secret key
+hf_api_key = st.secrets["Rag_QA"]
 
 uploaded_file = st.file_uploader("Upload a Document (PDF, TXT, DOCX)", type=["pdf", "txt", "docx"])
 
-if uploaded_file and hf_api_key:
+if uploaded_file:
     docs = load_document(uploaded_file)
     if docs:
-        st.success("Document Loaded Successfully.")
+        st.success("✅ Document Loaded Successfully.")
         retriever = process_docs(docs)
 
         query = st.text_input("Ask a question about the document:")
         if st.button("Submit") and query:
-            with st.spinner("Generating answer..."):
+            with st.spinner("🤖 Generating answer..."):
                 response = answer_question(query, retriever, api_key=hf_api_key)
                 st.markdown("### 📌 Answer")
                 st.write(response)
 else:
-    st.warning("Please upload a document and enter your HF API key.")
+    st.warning("⚠️ Please upload a document.")
