@@ -12,7 +12,7 @@ from langchain.text_splitter import CharacterTextSplitter
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
 from langchain_community.docstore.in_memory import InMemoryDocstore
-from langchain_huggingface import HuggingFaceEndpoint
+from langchain_community.llms import HuggingFaceEndpoint
 
 
 # from secret_api_keys import Rag_QA  # Set the Hugging Face Hub API token as an environment variable
@@ -97,8 +97,9 @@ def answer_question(vectorstore, query):
     repo_id='microsoft/Phi-3.5-mini-instruct',
     token=Rag_QA,
     temperature=0.6,
-    task="text-generation"   # <-- ADD THIS
+    task="text-generation"
 )
+
 
     qa = RetrievalQA.from_chain_type(llm=llm, retriever=vectorstore.as_retriever())
 
