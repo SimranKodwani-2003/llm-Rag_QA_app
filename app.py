@@ -1,87 +1,136 @@
+
 import streamlit as st
-from langchain_community.document_loaders import PyPDFLoader, TextLoader, Docx2txtLoader
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain.embeddings import HuggingFaceEmbeddings
-from langchain.vectorstores import FAISS
-from langchain.chains import RetrievalQA
-from huggingface_hub import InferenceClient
-from langchain_core.language_models import LLM
+import faiss
 import os
+from io import BytesIO
+from docx import Document
+import numpy as np
+from langchain_community.document_loaders import WebBaseLoader
+from PyPDF2 import PdfReader
+from langchain.chains import RetrievalQA
+from langchain.text_splitter import CharacterTextSplitter
+from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_community.vectorstores import FAISS
+from langchain_community.docstore.in_memory import InMemoryDocstore
+from langchain_huggingface import HuggingFaceEndpoint
 
-# ----------------------------- Custom LangChain Wrapper -----------------------------
 
-class HFInferenceLLM(LLM):
-    def __init__(self, api_key, model):
-        self.client = InferenceClient(token=api_key)
-        self.model = model
+from secret_api_keys import Rag_QA  # Set the Hugging Face Hub API token as an environment variable
+# Rag_QA = st.secrets["Rag_QA"]
+os.environ['HUGGINGFACEHUB_API_TOKEN'] = Rag_QA
 
-    def _call(self, prompt: str, **kwargs) -> str:
-        response = self.client.text_generation(
-            model=self.model,
-            prompt=prompt,
-            max_new_tokens=256,
-            temperature=0.7
-        )
-        return response.generated_text if hasattr(response, "generated_text") else response
-
-    @property
-    def _llm_type(self) -> str:
-        return "huggingface-inference-client"
-
-# ----------------------------- App Logic -----------------------------
-
-def load_document(uploaded_file):
-    file_path = f"temp_docs/{uploaded_file.name}"
-    os.makedirs("temp_docs", exist_ok=True)
-    with open(file_path, "wb") as f:
-        f.write(uploaded_file.getbuffer())
-
-    if uploaded_file.name.endswith(".pdf"):
-        loader = PyPDFLoader(file_path)
-    elif uploaded_file.name.endswith(".docx"):
-        loader = Docx2txtLoader(file_path)
-    elif uploaded_file.name.endswith(".txt"):
-        loader = TextLoader(file_path)
+def process_input(input_type, input_data):
+    """Processes different input types and returns a vectorstore."""
+    loader = None
+    if input_type == "Link":
+        loader = WebBaseLoader(input_data)
+        documents = loader.load()
+    elif input_type == "PDF":
+        if isinstance(input_data, BytesIO):
+            pdf_reader = PdfReader(input_data)
+        elif isinstance(input_data, UploadedFile):
+            pdf_reader = PdfReader(BytesIO(input_data.read()))
+        else:
+            raise ValueError("Invalid input data for PDF")
+        text = ""
+        for page in pdf_reader.pages:
+            text += page.extract_text()
+        documents = text
+    elif input_type == "Text":
+        if isinstance(input_data, str):
+            documents = input_data  # Input is already a text string
+        else:
+            raise ValueError("Expected a string for 'Text' input type.")
+    elif input_type == "DOCX":
+        if isinstance(input_data, BytesIO):
+            doc = Document(input_data)
+        elif isinstance(input_data, UploadedFile):
+            doc = Document(BytesIO(input_data.read()))
+        else:
+            raise ValueError("Invalid input data for DOCX")
+        text = "\n".join([para.text for para in doc.paragraphs])
+        documents = text
+    elif input_type == "TXT":
+        if isinstance(input_data, BytesIO):
+            text = input_data.read().decode('utf-8')
+        elif isinstance(input_data, UploadedFile):
+            text = str(input_data.read().decode('utf-8'))
+        else:
+            raise ValueError("Invalid input data for TXT")
+        documents = text
     else:
-        st.error("Unsupported file format.")
-        return None
+        raise ValueError("Unsupported input type")
 
-    return loader.load()
+    text_splitter = CharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
+    if input_type == "Link":
+        texts = text_splitter.split_documents(documents)
+        texts = [ str(doc.page_content) for doc in texts ]  # Access page_content from each Document 
+    else:
+        texts = text_splitter.split_text(documents)
 
-def process_docs(documents):
-    splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=100)
-    chunks = splitter.split_documents(documents)
-    embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
-    vectorstore = FAISS.from_documents(chunks, embeddings)
-    return vectorstore.as_retriever()
+    model_name = "sentence-transformers/all-mpnet-base-v2"
+    model_kwargs = {'device': 'cpu'}
+    encode_kwargs = {'normalize_embeddings': False}
 
-def answer_question(user_query, retriever, api_key):
-    llm = HFInferenceLLM(api_key=api_key, model="microsoft/Phi-3.5-mini-instruct")
-    qa_chain = RetrievalQA.from_chain_type(llm=llm, retriever=retriever)
-    result = qa_chain.run(user_query)
-    return result
+    hf_embeddings = HuggingFaceEmbeddings(
+        model_name=model_name,
+        model_kwargs=model_kwargs,
+        encode_kwargs=encode_kwargs
+    )
+    # Create FAISS index
+    sample_embedding = np.array(hf_embeddings.embed_query("sample text"))
+    dimension = sample_embedding.shape[0]
+    index = faiss.IndexFlatL2(dimension)
+    # Create FAISS vector store with the embedding function
+    vector_store = FAISS(
+        embedding_function=hf_embeddings.embed_query,
+        index=index,
+        docstore=InMemoryDocstore(),
+        index_to_docstore_id={},
+    )
+    vector_store.add_texts(texts)  # Add documents to the vector store
+    return vector_store
 
-# ----------------------------- Streamlit UI -----------------------------
+def answer_question(vectorstore, query):
+    """Answers a question based on the provided vectorstore."""
+    llm = HuggingFaceEndpoint(
+    repo_id='microsoft/Phi-3.5-mini-instruct',
+    token=Rag_QA,
+    temperature=0.6,
+    task="text-generation"   # <-- ADD THIS
+)
 
-st.set_page_config(page_title="RAG Q&A App", layout="wide")
-st.title("🧠 LLM RAG Q&A with Phi-3.5-mini")
+    qa = RetrievalQA.from_chain_type(llm=llm, retriever=vectorstore.as_retriever())
 
-# 🔐 Use secret key
-hf_api_key = st.secrets["Rag_QA"]
+    answer = qa({"query": query})
+    return answer
 
-uploaded_file = st.file_uploader("Upload a Document (PDF, TXT, DOCX)", type=["pdf", "txt", "docx"])
+def main():
+    st.title("RAG Q&A App")
+    input_type = st.selectbox("Input Type", ["Link", "PDF", "Text", "DOCX", "TXT"])
+    if input_type == "Link":
+        number_input = st.number_input(min_value=1, max_value=20, step=1, label = "Enter the number of Links")
+        input_data = []
+        for i in range(number_input):
+            url = st.sidebar.text_input(f"URL {i+1}")
+            input_data.append(url)
+    elif input_type == "Text":
+        input_data = st.text_input("Enter the text")
+    elif input_type == 'PDF':
+        input_data = st.file_uploader("Upload a PDF file", type=["pdf"])
+    elif input_type == 'TXT':
+        input_data = st.file_uploader("Upload a text file", type=['txt'])
+    elif input_type == 'DOCX':
+        input_data = st.file_uploader("Upload a DOCX file", type=[ 'docx', 'doc'])
+    if st.button("Proceed"):
+        # st.write(process_input(input_type, input_data))
+        vectorstore = process_input(input_type, input_data)
+        st.session_state["vectorstore"] = vectorstore
+    if "vectorstore" in st.session_state:
+        query = st.text_input("Ask your question")
+        if st.button("Submit"):
+            answer = answer_question(st.session_state["vectorstore"], query)
+            st.write(answer)
 
-if uploaded_file:
-    docs = load_document(uploaded_file)
-    if docs:
-        st.success("✅ Document Loaded Successfully.")
-        retriever = process_docs(docs)
-
-        query = st.text_input("Ask a question about the document:")
-        if st.button("Submit") and query:
-            with st.spinner("🤖 Generating answer..."):
-                response = answer_question(query, retriever, api_key=hf_api_key)
-                st.markdown("### 📌 Answer")
-                st.write(response)
-else:
-    st.warning("⚠️ Please upload a document.")
+if __name__ == "__main__":
+    main()
