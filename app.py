@@ -15,6 +15,7 @@ from langchain_huggingface import HuggingFaceEndpoint
 
 # Load API key securely
 Rag_QA = st.secrets["Rag_QA"]
+os.environ["STREAMLIT_SERVER_RUN_ON_SAVE"] = "false"
 
 # Set the Hugging Face API token as an environment variable
 # os.environ['HUGGINGFACEHUB_API_TOKEN'] = Rag_QA
